@@ -1,7 +1,7 @@
 # fintools-ishares-proxy
 
 A single-purpose Cloudflare Worker that relays GET requests to iShares' two
-public JSON planes for [finance-mcp-server](../finance-mcp-server)'s fund
+public JSON planes for [finance-mcp-server](https://github.com/ShinChven/finance-mcp-server)'s fund
 ingest, and reports which Cloudflare colo the request egressed from.
 
 It exists because BlackRock fronts those endpoints with Akamai Bot Manager, and

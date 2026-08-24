@@ -12,9 +12,9 @@
  * whether deploying it was worth the trouble:
  *
  *   - Egress geography: it changes, but is NOT chosen. A Worker runs in the
- *     colo nearest the *caller*, so an ingest host in Hong Kong gets a Hong
- *     Kong colo and the same block. `/health` reports the colo and country
- *     precisely so this is measurable rather than assumed.
+ *     colo nearest the *caller*, so an ingest host gets a colo in its own
+ *     region and, with it, the same block. `/health` reports the colo and
+ *     country precisely so this is measurable rather than assumed.
  *   - IP reputation: barely. AS13335 is a datacenter range like any other.
  *   - TLS/HTTP2 fingerprint (JA3/JA4): not at all. Subrequests use Cloudflare's
  *     stack; no header we set makes it look like Chrome.
