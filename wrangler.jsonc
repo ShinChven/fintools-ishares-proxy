@@ -1,0 +1,17 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "ishares-proxy",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-09-01",
+  "observability": { "enabled": true },
+  "vars": {
+    // Hosts this proxy is willing to fetch. Anything else is refused, so a
+    // leaked token cannot turn this into a general-purpose open proxy.
+    "ALLOWED_HOSTS": "www.ishares.com",
+    // How long a successful body is served from Cloudflare's cache. One hour
+    // matches the ingest's own re-run granularity: a retry after a partial run
+    // costs nothing upstream, and holdings are published daily at most.
+    "CACHE_TTL_SECONDS": "3600"
+  }
+  // PROXY_TOKEN is a secret, not a var: `wrangler secret put PROXY_TOKEN`.
+}
