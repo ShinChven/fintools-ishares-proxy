@@ -5,12 +5,12 @@ public JSON planes for [finance-mcp-server](../finance-mcp-server)'s fund
 ingest, and reports which Cloudflare colo the request egressed from.
 
 It exists because BlackRock fronts those endpoints with Akamai Bot Manager, and
-the block lands on the caller as much as on the request: from rack8, where the
-ingest actually runs, the fund index answers `403` from `AkamaiGHost` and never
-reaches iShares at all. A browser-like `User-Agent` — which the client already
-sends — cannot fix that. eastmoney, SEC, Yahoo and CoinGecko are all fine direct
-from the same host, which is why this relays one provider rather than being a
-general egress proxy.
+the block lands on the caller as much as on the request: from a host whose
+egress IP Akamai has already judged, the fund index answers `403` from
+`AkamaiGHost` — the CDN's own block page — and never reaches iShares at all. A
+browser-like `User-Agent`, which the client already sends, cannot fix that. The
+other upstreams are fine direct from the same host, which is why this relays one
+provider rather than being a general egress proxy.
 
 ## What this can and cannot fix
 
@@ -19,7 +19,7 @@ keeping:
 
 | Block dimension | Does the Worker help? |
 |---|---|
-| Egress geography | It **changes**, but you do not **choose** it — a Worker runs in the colo nearest the caller. An ingest host in Hong Kong gets a Hong Kong colo. |
+| Egress geography | It **changes**, but you do not **choose** it — a Worker runs in the colo nearest the caller. An ingest host gets the colo nearest to it. |
 | IP reputation / datacenter ASN | Barely. AS13335 is a datacenter range like any other. |
 | TLS/HTTP2 fingerprint (JA3/JA4) | Not at all. Subrequests use Cloudflare's TLS stack; no header makes it look like Chrome. |
 
@@ -29,10 +29,10 @@ a geographic block will reproduce and the Worker is not the fix — a US VPS
 running `curl-impersonate`, or scheduled ingest on a US GitHub Actions runner,
 are the next options.
 
-**Measured 2026-08-24, from this machine (NZ):** both endpoints answer `200`
-with real JSON — the 1.9 MB screener and a 204 KB holdings payload for IVV.
-Whatever blocked the earlier attempt was specific to that environment's egress,
-not to iShares refusing this network.
+**Measured 2026-08-24:** from an unblocked network both endpoints answer `200`
+with real JSON — the 1.9 MB screener and a 204 KB holdings payload for IVV. The
+block is on the calling host's egress IP, not on iShares refusing the request
+shape.
 
 ## Deploying from this repository
 
@@ -107,7 +107,7 @@ from "iShares said no", and the caller's own 403 stays a 403 with its real body.
 ### `GET /health`
 
 ```json
-{ "ok": true, "x-proxy-colo": "AKL", "x-proxy-country": "NZ",
+{ "ok": true, "x-proxy-colo": "XXX", "x-proxy-country": "XX",
   "allowedHosts": ["www.ishares.com"], "cacheTtlSeconds": 3600 }
 ```
 
