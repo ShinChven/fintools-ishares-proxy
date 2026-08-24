@@ -33,11 +33,13 @@ const DEFAULT_CACHE_TTL_SECONDS = 3600;
 const UPSTREAM_TIMEOUT_MS = 25_000;
 
 /**
- * Bodies are buffered so they can be sniffed before caching, which caps how
- * large a response this will relay. The whole US screener is a few megabytes
- * and the largest holdings payload is smaller; 32 MB is slack, not a target.
+ * How much of the body is read before the relay starts sending. Only the head
+ * is needed to recognize an interstitial, and reading no more than that is what
+ * keeps time-to-first-byte flat as payloads grow: buffering the whole body
+ * first cost two seconds on the 1.9 MB product screener, because the caller
+ * could not start reading until the Worker had finished.
  */
-const MAX_BODY_BYTES = 32 * 1024 * 1024;
+const SNIFF_BYTES = 512;
 
 /**
  * The headers that actually matter to iShares, forwarded from the caller so the
@@ -142,12 +144,64 @@ function upstreamHeaders(request: Request): Headers {
  * out of the cache. Caching a block page would freeze the failure for an hour
  * and make every retry in that window a lie.
  */
-function looksLikeHtml(bytes: ArrayBuffer): boolean {
-  const head = new TextDecoder()
-    .decode(bytes.slice(0, 512))
-    .trimStart()
-    .toLowerCase();
-  return head.startsWith("<!doctype html") || head.startsWith("<html") || head.startsWith("<head");
+function looksLikeHtml(head: Uint8Array): boolean {
+  const text = new TextDecoder().decode(head).trimStart().toLowerCase();
+  return text.startsWith("<!doctype html") || text.startsWith("<html") || text.startsWith("<head");
+}
+
+/**
+ * Pulls just enough of the body to recognize it, and hands back a stream that
+ * still yields the whole thing — the consumed head re-enqueued ahead of
+ * whatever the reader has not reached yet. The alternative, reading it all and
+ * replaying it from memory, is what made large responses slow.
+ */
+async function peek(
+  body: ReadableStream<Uint8Array>,
+): Promise<{ head: Uint8Array; stream: ReadableStream<Uint8Array> }> {
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  let finished = false;
+  while (size < SNIFF_BYTES) {
+    const { done, value } = await reader.read();
+    if (done) {
+      finished = true;
+      break;
+    }
+    if (value !== undefined && value.byteLength > 0) {
+      chunks.push(value);
+      size += value.byteLength;
+    }
+  }
+
+  const head = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    head.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      if (head.byteLength > 0) controller.enqueue(head);
+      if (finished) controller.close();
+    },
+    async pull(controller) {
+      if (finished) return;
+      const { done, value } = await reader.read();
+      if (done) {
+        finished = true;
+        controller.close();
+        return;
+      }
+      controller.enqueue(value);
+    },
+    cancel(reason) {
+      return reader.cancel(reason);
+    },
+  });
+
+  return { head, stream };
 }
 
 /** Where this request egressed from — the whole point of the diagnostics. */
@@ -193,13 +247,24 @@ async function handleFetch(request: Request, env: Env, ctx: ExecutionContext): P
     return proxyError(502, `upstream fetch failed: ${error instanceof Error ? error.message : String(error)}`);
   }
 
-  const body = await upstream.arrayBuffer();
-  if (body.byteLength > MAX_BODY_BYTES) {
-    return proxyError(502, `upstream body too large (${body.byteLength} bytes)`);
+  const contentType = upstream.headers.get("content-type") ?? "application/octet-stream";
+  // A response with no body at all (a 304, a HEAD-like empty answer) is nothing
+  // to sniff and nothing to cache; relay the status and be done.
+  if (upstream.body === null) {
+    return new Response(null, {
+      status: upstream.status,
+      headers: new Headers({
+        "content-type": contentType,
+        "x-proxy-cache": "skip",
+        "x-proxy-upstream-status": String(upstream.status),
+        "cache-control": "no-store",
+        ...edgeHeaders(request),
+      }),
+    });
   }
 
-  const contentType = upstream.headers.get("content-type") ?? "application/octet-stream";
-  const isHtml = looksLikeHtml(body);
+  const { head, stream } = await peek(upstream.body);
+  const isHtml = looksLikeHtml(head);
   // Only a genuine document is cached. A non-200 or an interstitial is relayed
   // verbatim — the caller's own HTML check is what turns it into an error, and
   // it needs to see it every time it asks, not once an hour.
@@ -218,17 +283,26 @@ async function handleFetch(request: Request, env: Env, ctx: ExecutionContext): P
     headers.set("x-proxy-blocked", "html-interstitial");
   }
 
-  if (cacheable) {
-    const stored = new Response(body, {
-      status: 200,
-      headers: { "content-type": contentType, "cache-control": `public, max-age=${ttl}` },
-    });
-    ctx.waitUntil(cache.put(cacheKey, stored));
-  } else {
+  if (!cacheable) {
     headers.set("cache-control", "no-store");
+    return new Response(stream, { status: upstream.status, headers });
   }
 
-  return new Response(body, { status: upstream.status, headers });
+  // Split the stream rather than buffering it: one branch goes to the caller
+  // immediately, the other is drained into the cache in the background. Without
+  // `waitUntil` the second branch would be cancelled the moment the response is
+  // returned, and nothing would ever be stored.
+  const [toCaller, toCache] = stream.tee();
+  ctx.waitUntil(
+    cache.put(
+      cacheKey,
+      new Response(toCache, {
+        status: 200,
+        headers: { "content-type": contentType, "cache-control": `public, max-age=${ttl}` },
+      }),
+    ),
+  );
+  return new Response(toCaller, { status: upstream.status, headers });
 }
 
 /**
