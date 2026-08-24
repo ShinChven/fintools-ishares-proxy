@@ -4,9 +4,13 @@ A single-purpose Cloudflare Worker that relays GET requests to iShares' two
 public JSON planes for [finance-mcp-server](../finance-mcp-server)'s fund
 ingest, and reports which Cloudflare colo the request egressed from.
 
-It exists because BlackRock fronts those endpoints with Akamai Bot Manager,
-which answers a request it dislikes with an HTML interstitial rather than an
-error — so a blocked ingest run reads as a source with nothing in it.
+It exists because BlackRock fronts those endpoints with Akamai Bot Manager, and
+the block lands on the caller as much as on the request: from rack8, where the
+ingest actually runs, the fund index answers `403` from `AkamaiGHost` and never
+reaches iShares at all. A browser-like `User-Agent` — which the client already
+sends — cannot fix that. eastmoney, SEC, Yahoo and CoinGecko are all fine direct
+from the same host, which is why this relays one provider rather than being a
+general egress proxy.
 
 ## What this can and cannot fix
 
@@ -30,7 +34,28 @@ with real JSON — the 1.9 MB screener and a 204 KB holdings payload for IVV.
 Whatever blocked the earlier attempt was specific to that environment's egress,
 not to iShares refusing this network.
 
-## Setup
+## Deploying from this repository
+
+Cloudflare dashboard → **Workers & Pages** → **Create** → **Import a repository**
+→ pick `ShinChven/fintools-ishares-proxy`. The defaults are right: build command
+empty, deploy command `npx wrangler deploy`, root directory `/`. Every push to
+`main` redeploys.
+
+Then set the secret once — it is not in the repo and Workers Builds cannot
+invent it:
+
+```bash
+npx wrangler secret put PROXY_TOKEN --name fintools-ishares-proxy
+```
+
+Confirm the deploy and see where it egresses from:
+
+```bash
+curl -H "Authorization: Bearer $PROXY_TOKEN" \
+  https://fintools-ishares-proxy.<subdomain>.workers.dev/health
+```
+
+## Local setup
 
 ```bash
 npm install
@@ -104,14 +129,17 @@ is the one thing these endpoints demand. Everything else, cookies and the
 caller's own `Authorization` above all, is dropped: this relay carries no
 identity of its own or anyone else's.
 
-## Wiring it into finance-mcp-server
+## The client side
 
-`IsharesClient` already takes an injectable `fetchImpl` and `endpoints`, so the
-client side is an env-var read in `src/server/funds/providers/ishares/client.ts`
-— rewrite the URL in `get()` and add the bearer header when
-`ISHARES_PROXY_BASE` / `ISHARES_PROXY_TOKEN` are set, direct otherwise, with
-`--probe` printing which route it took. That change lives entirely in the
-provider directory; the pipeline never learns the proxy exists.
+[`finance-mcp-server`](https://github.com/ShinChven/finance-mcp-server) reads
+`ISHARES_PROXY_BASE` and `ISHARES_PROXY_TOKEN`; both unset, it fetches direct.
+The rewrite happens in `providers/ishares/client.ts` alone — the pipeline never
+learns the relay exists — and `--probe` prints which route was taken:
+
+    ishares (IVV): all steps returned data [proxy https://fintools-ishares-proxy…]
+
+A refusal from here carries `x-proxy-error`, which iShares never sends, so a bad
+token reports as a bad token rather than as bot protection.
 
 ## Tests
 
