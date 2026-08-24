@@ -1,4 +1,4 @@
-# ishares-proxy
+# fintools-ishares-proxy
 
 A single-purpose Cloudflare Worker that relays GET requests to iShares' two
 public JSON planes for [finance-mcp-server](../finance-mcp-server)'s fund
@@ -59,7 +59,7 @@ Fetches the target and relays it verbatim — status, body, content type.
 ```bash
 curl -H "Authorization: Bearer $PROXY_TOKEN" \
   --get --data-urlencode "u=https://www.ishares.com/us/product-screener/product-screener-v3.1.jsn?dcrPath=..." \
-  https://ishares-proxy.<subdomain>.workers.dev/fetch
+  https://fintools-ishares-proxy.<subdomain>.workers.dev/fetch
 ```
 
 The target must be `https:` on an allow-listed host (`ALLOWED_HOSTS`,
